@@ -10,8 +10,8 @@ from database.utils import get_database_url
 # access to the values within the .ini file in use.
 config = context.config
 
-database_url = get_database_url()
-config.set_main_option(name="sqlalchemy.url", value=str(database_url))
+database_url = get_database_url().render_as_string(hide_password=False)
+config.set_main_option(name="sqlalchemy.url", value=database_url)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
