@@ -1,0 +1,1 @@
+HASHING_ALGORITHM = "sha256"
