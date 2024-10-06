@@ -1,8 +1,8 @@
 import os
+from contextlib import asynccontextmanager
 from hashlib import file_digest
 from shutil import copyfileobj
 from typing import Annotated
-from uuid import uuid4
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -13,7 +13,14 @@ from database.schema import Bucket, File
 from database.session import DatabaseSessionDependency
 from env import env
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+	os.makedirs(env.buckets_dir, exist_ok=True)
+	yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/buckets")
@@ -21,18 +28,20 @@ def create_bucket(
 	id: Annotated[str, Form(min_length=1)],
 	session: DatabaseSessionDependency,
 ):
+	bucket_path = os.path.join(env.buckets_dir, id)
 	try:
-		bucket_path = os.path.join(env.buckets_dir, id)
 		os.mkdir(bucket_path)
-	except FileExistsError:
-		raise HTTPException(status_code=409, detail="Bucket already exists")
-
-	try:
 		bucket = Bucket(id=id)
 		session.add(bucket)
 		session.commit()
+	except FileExistsError:
+		raise HTTPException(status_code=409, detail="Bucket already exists")
 	except Exception as exception:
-		os.rmdir(bucket_path)
+		try:
+			os.rmdir(bucket_path)
+		except FileNotFoundError:
+			pass
+
 		raise exception
 
 
@@ -45,22 +54,16 @@ def upload_file(
 	if file.filename is None:
 		raise HTTPException(status_code=400, detail="File name could not be determined")
 
-	bucket_path = os.path.join(env.buckets_dir, bucket_id)
-	if not os.path.exists(bucket_path):
-		raise HTTPException(status_code=404, detail="Bucket not found")
-
-	file_id = uuid4()
-	file_path = os.path.join(bucket_path, str(file_id))
-	with open(file_path, mode="xb") as f:
-		copyfileobj(file.file, f, length=env.file_chunk_size)
-
+	file_path = os.path.join(env.buckets_dir, bucket_id, file.filename)
 	try:
+		with open(file_path, mode="xb+") as f:
+			copyfileobj(file.file, f)
+
 		with open(file_path, mode="rb") as f:
 			checksum = file_digest(f, HASHING_ALGORITHM).hexdigest()
 
 		database_file = File(
-			id=file_id,
-			name=file.filename,
+			id=file.filename,
 			mime_type=file.content_type,
 			size=file.size,
 			checksum=checksum,
@@ -68,24 +71,34 @@ def upload_file(
 		)
 		session.add(database_file)
 		session.commit()
+	except FileNotFoundError:
+		raise HTTPException(status_code=404, detail="Bucket not found")
+	except FileExistsError:
+		raise HTTPException(status_code=409, detail="File already exists")
 	except Exception as exception:
-		os.remove(file_path)
+		try:
+			os.remove(file_path)
+		except FileNotFoundError:
+			pass
+
 		raise exception
 
 
-@app.get("/buckets/{bucket_id}/files/{file_name}")
-def get_file(bucket_id: str, file_name: str, session: DatabaseSessionDependency):
-	database_file = session.scalar(
-		select(File).where(File.bucket_id == bucket_id, File.name == file_name)
-	)
-	if database_file is None:
+@app.get("/buckets/{bucket_id}/files/{file_id}")
+def get_file(bucket_id: str, file_id: str, session: DatabaseSessionDependency):
+	try:
+		file_path = os.path.join(env.buckets_dir, bucket_id, file_id)
+		with open(file_path, "rb") as f:
+			checksum = file_digest(f, HASHING_ALGORITHM).hexdigest()
+	except FileNotFoundError:
 		raise HTTPException(status_code=404, detail="File not found")
 
-	file_path = os.path.join(
-		env.buckets_dir, database_file.bucket_id, str(database_file.id)
+	database_file = session.scalar(
+		select(File).where(File.bucket_id == bucket_id, File.id == file_id)
 	)
-	with open(file_path, "rb") as f:
-		checksum = file_digest(f, HASHING_ALGORITHM).hexdigest()
+
+	if database_file is None:
+		raise HTTPException(status_code=404, detail="File not found")
 
 	if checksum != database_file.checksum:
 		raise HTTPException(status_code=500)
@@ -93,5 +106,5 @@ def get_file(bucket_id: str, file_name: str, session: DatabaseSessionDependency)
 	return FileResponse(
 		path=file_path,
 		media_type=database_file.mime_type,
-		filename=database_file.name,
+		filename=database_file.id,
 	)

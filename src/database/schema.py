@@ -1,7 +1,6 @@
 from datetime import datetime
-from uuid import UUID
 
-from sqlalchemy import ForeignKey, UniqueConstraint, func
+from sqlalchemy import ForeignKey, func
 from sqlalchemy.orm import (
 	DeclarativeBase,
 	Mapped,
@@ -25,12 +24,8 @@ class Bucket(MappedAsDataclass, Base):
 
 class File(MappedAsDataclass, Base):
 	__tablename__ = "files"
-	__table_args__ = (
-		UniqueConstraint("name", "bucket_id", name="files_name_bucket_id_uc"),
-	)
 
-	id: Mapped[UUID] = mapped_column(primary_key=True)
-	name: Mapped[str]
+	id: Mapped[str] = mapped_column(primary_key=True)
 	mime_type: Mapped[str | None]
 	size: Mapped[int | None]
 	checksum: Mapped[str]
